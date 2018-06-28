@@ -6,12 +6,6 @@ from pyteamcity import TeamCity
 from models import Project, BuildType, BuildType
 
 
-class Metric(object):
-    def __init__(self, name, value):
-        self.name = name
-        self.value = value
-
-
 class MetricsCollector(object):
     logger = logging.getLogger(__name__)
 
