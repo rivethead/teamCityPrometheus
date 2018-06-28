@@ -6,17 +6,18 @@ from pyteamcity import TeamCity
 
 
 class Node(object):
-    def __init__(self, data):
-        self.data = data
+    def __init__(self, id, name):
+        self.id = id
+        self.name = name
         self.children = []
-        self.data.belongs_to_node(self)
+        # self.data.belongs_to_node(self)
 
     def append(self, node):
         node.parent = self
         self.children.append(node)
 
     def find(self, id):
-        if self.data.id == id:
+        if self.id == id:
             return self
 
         for c in self.children:
@@ -27,14 +28,14 @@ class Node(object):
 
         return None
 
-    def walk(self, func, level=0, limit_to_level=999):
+    def walk(self, func, level=0):
         func(self, level)
 
         for c in self.children:
             c.walk(func, level + 1)
 
     def __str__(self):
-        return self.data
+        return self.id
 
 
 class Metric(object):
@@ -43,7 +44,7 @@ class Metric(object):
         self.value = value
 
 
-class Project(object):
+class Project(Node):
     logger = logging.getLogger(__name__)
 
     def __init__(self, id, name):
@@ -51,13 +52,15 @@ class Project(object):
         self.name = name
         self.node = None
 
+        super(Project, self).__init__(id, name)
+
     def belongs_to_node(self, node):
         self.parent = node
         return self
 
     @staticmethod
     def from_dict(data):
-        return Node(Project(data["id"], data["name"]))
+        return Project(data["id"], data["name"])
 
     def populate(self, team_city):
         Project.logger.info("Getting build types for project '%s'", self.name)
@@ -71,7 +74,7 @@ class Project(object):
             build_type = BuildType.from_dict(bt, team_city)
 
             Project.logger.info("Adding build type '%s' to project '%s'",
-                                build_type.data.name, self.name)
+                                build_type.name, self.name)
 
             self.parent.append(build_type)
 
@@ -79,14 +82,15 @@ class Project(object):
         return "{} - {}".format(type(self).__name__, self.name)
 
 
-class BuildType(object):
+class BuildType(Node):
     logger = logging.getLogger(__name__)
 
     def __init__(self, id, name):
         self.id = id
         self.name = name
         self.parent = None
-        self.builds = []
+
+        super(BuildType, self).__init__(id, name)
 
     def belongs_to_node(self, node):
         self.parent = node
@@ -101,7 +105,6 @@ class BuildType(object):
     @staticmethod
     def from_dict(data, team_city):
         new_build_type = BuildType(data["id"], data["name"])
-        new_build_type_node = Node(new_build_type)
 
         BuildType.logger.info("Getting builds for build type '%s'",
                               new_build_type.id)
@@ -115,18 +118,20 @@ class BuildType(object):
             build = Build.from_dict(b, team_city)
 
             BuildType.logger.info("Adding build '%s' to build type '%s'",
-                                  build.data.build_number, new_build_type.name)
+                                  build.build_number, new_build_type.name)
 
-            new_build_type_node.append(build)
+            new_build_type.append(build)
 
-        return new_build_type_node
+        return new_build_type
 
     def __str__(self):
         return "{} - {}".format(type(self).__name__, self.name)
 
 
-class Build(object):
+class Build(Node):
     BUILD_STATUS = "status"
+    BUILD_DURATION = "duration"
+    BUILD_TEST_STATUS = "test_status"
 
     def __init__(self, id, build_number, status):
         self.id = id
@@ -134,7 +139,10 @@ class Build(object):
         self.status = status
         self.parent = None
         self.build_metrics = [
-            Metric(Build.BUILD_STATUS, 1 if status == "SUCCESS" else 0)]
+            Metric(Build.BUILD_STATUS, 1 if status == "SUCCESS" else 0),
+            Metric(Build.BUILD_DURATION, 0)]
+
+        super(Build, self).__init__(id, build_number)
 
     def metrics(self):
         return self.build_metrics
@@ -149,17 +157,13 @@ class Build(object):
     @staticmethod
     def from_dict(data, team_city):
         build = Build(data["id"], data["number"], data["status"])
-        return Node(build)
+
+        # stats = team_city.get_build_statistics_by_build_id(data["id"])
+
+        return build
 
     def __str__(self):
-        header_line = "{} - {} ({})".format(type(self).__name__,
-                                            self.build_number, self.status)
-
-        metrics_line = ""
-        for m in self.build_metrics:
-            metrics_line = "\t{} - {}\n".format(m.name, m.value)
-
-        return "{}\n{}".format(header_line, metrics_line)
+        return "{} - {} ({})".format(type(self).__name__, self.build_number, self.status)
 
 
 class MetricsCollector(object):
@@ -175,17 +179,24 @@ class MetricsCollector(object):
 
         projects = tc.get_projects()
 
-        MetricsCollector.logger.info("Got projects %s projects from TeamCity",
+        MetricsCollector.logger.info("Got %s projects from TeamCity",
                                      len(projects["project"]))
 
-        root = Node(Project("_Root", "Root Project"))
+        filtering = CollectorFilter()
 
-        for p in filter(lambda p: p["id"] != root.data.id, projects["project"]):
+        root = Project("_Root", "Root Project")
+
+        for p in filter(lambda p: p["id"] != root.id, projects["project"]):
             project = Project.from_dict(p)
+            if not filtering.include(project):
+                MetricsCollector.logger.debug(
+                    "Ignoring project {}".format(project))
+                continue
+
             parent = root.find(p["parentProjectId"])
 
             MetricsCollector.logger.info("Adding '%s' to the project '%s'",
-                                         project.data.name, parent.data.name)
+                                         project.name, parent.name)
 
             parent.append(project)
 
@@ -197,7 +208,7 @@ class MetricsCollector(object):
         return root
 
     def _collect(self, node, level):
-        thread = Thread(name=node.data.name, target=node.data.populate,
+        thread = Thread(name=node.name, target=node.populate,
                         args=(self._create_team_city_connection(),))
         thread.setDaemon(False)
         self.threads.append(thread)
@@ -230,3 +241,27 @@ class MetricsCollector(object):
                       tc_url, protocol='https', port=443)
 
         return tc
+
+
+class CollectorFilter(object):
+    def __init__(self):
+        self._include = ["homestead"]
+        super(CollectorFilter, self).__init__()
+
+    def include(self, node):
+        return unicode.lower(node.name) in self._include
+
+
+class CollectorIncludeFilter(object):
+    def __init__(self, include=[]):
+        self._include = [] if include is None else include
+        super(CollectorIncludeFilter, self).__init__()
+
+
+class CollectionFilter(object):
+    def __init__(self, projects=[], build_types=[], builds=[]):
+        self.projects = [] if projects is None else projects
+        self.build_types = [] if build_types is None else build_types
+        self.builds = [] if builds is None else builds
+
+        super(CollectionFilter, self).__init__()

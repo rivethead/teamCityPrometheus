@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
     def print_to_screen(node, level):
         tabs = ("\t" * level)[:level]
-        print("{}{} ({})".format(tabs, node.data, len(node.children)))
+        print("{}{} ({})".format(tabs, node, len(node.children)))
 
     tree.walk(print_to_screen)
 
